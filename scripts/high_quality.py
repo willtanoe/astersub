@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 import numpy as np
 from faster_whisper import WhisperModel
 
+from asr_completeness import AUDIT_VERSION
+
 ROOT = Path(__file__).resolve().parents[1]
 PROMPT = """You are translating subtitles for a Chinese cultivation/fantasy drama.
 Translate Mandarin Chinese into natural conversational English.
@@ -357,6 +359,13 @@ class HighQuality:
         }
         return self._post(payload, label, budget)
 
+    def _decode(self, source):
+        audio = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-i", str(source),
+             "-vn", "-f", "f32le", "-ac", "1", "-ar", "16000", "pipe:1"],
+            capture_output=True, check=True)
+        return np.frombuffer(audio.stdout, dtype=np.float32).copy()
+
     def write(self, source, destination):
         self.episode = source.stem
         relative = destination.relative_to(self.args.output.resolve())
@@ -373,11 +382,11 @@ class HighQuality:
             state = {"source": fingerprint, "translations": {}, "llm_calls": 0}
         asr_start = time.perf_counter()
         asr_reused = "segments" in state
+        recovery = getattr(self.args, "asr_recovery", "auto") != "off"
+        max_windows = getattr(self.args, "asr_recovery_max_windows", 20)
+        waveform = None
         if not asr_reused:
-            audio = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(source),
-                "-vn", "-f", "f32le", "-ac", "1", "-ar", "16000", "pipe:1"],
-                capture_output=True, check=True)
-            waveform = np.frombuffer(audio.stdout, dtype=np.float32).copy()
+            waveform = self._decode(source)
             if self.model is None:
                 self.model = WhisperModel(self.args.model, device=self.args.device,
                                           compute_type=self.args.compute_type)
@@ -405,11 +414,41 @@ class HighQuality:
                          asr_runtime=time.perf_counter() - asr_start)
             save_json(state_path, state)
         segments = state["segments"]
+        audit_report = state.get("asr_audit")
+        if (not audit_report or audit_report.get("version") != AUDIT_VERSION
+                or (recovery and not audit_report.get("recovery_enabled"))):
+            from asr_completeness import audit as asr_audit, transcribe_window
+            if waveform is None:
+                waveform = self._decode(source)
+
+            def _recover(start, end):
+                if self.model is None:
+                    self.model = WhisperModel(self.args.model, device=self.args.device,
+                                              compute_type=self.args.compute_type)
+                return transcribe_window(self.model, waveform, start, end, self.args.beam_size)
+
+            audit_start = time.perf_counter()
+            segments, audit_report = asr_audit(
+                segments, waveform, transcribe=(_recover if recovery else None),
+                beam_size=self.args.beam_size, recovery=recovery, max_windows=max_windows)
+            audit_report["asr_audit_runtime"] = time.perf_counter() - audit_start
+            state["segments"] = segments
+            state["asr_audit"] = audit_report
+            save_json(state_path, state)
+        segments = state["segments"]
         if not self.args.srt_only:
             save_json(destination.with_name(destination.name.replace(".en.srt", ".segments.json")), segments)
             write_srt(destination.with_name(destination.name.replace(".en.srt", ".zh.srt")),
                       segments, "text_zh", self.timestamp)
         print(f"ASR: {state['asr_runtime']:.1f}s | reused={asr_reused} | segments={len(segments)}", flush=True)
+        if audit_report:
+            print(f"ASR completeness: suspicious gaps={audit_report['asr_suspicious_gaps']} | "
+                  f"recovery windows={audit_report['asr_recovery_windows']} | "
+                  f"recovered={audit_report['asr_segments_recovered']} | "
+                  f"rejected={audit_report['asr_recovery_rejected']} | "
+                  f"suspect existing segments={audit_report['asr_suspect_segments']}", flush=True)
+            for item in audit_report.get("recovered", []):
+                print(f"ASR recovery: window={item['window']} | result={item['text']!r} | accepted=True", flush=True)
         if not self.base or not self.key or not self.translation_model:
             raise RuntimeError("ASR saved. Set TRANSLATOR_BASE_URL, TRANSLATOR_API_KEY and TRANSLATOR_MODEL to translate/resume.")
         signature = hashlib.sha256(json.dumps([self.base, self.translation_model, self.glossary, self.prompt],
@@ -501,6 +540,16 @@ class HighQuality:
                   terminology_conflicts=self.memory.stats["conflicts"],
                   terminology_suspect_asr_observations=self.memory.stats.get("suspect", 0))
         qc.update({"terminology_detail_" + key: value for key, value in self.memory.stats.items()})
+        if audit_report:
+            qc.update(asr_segments_original=audit_report["asr_segments_original"],
+                      asr_suspicious_gaps=audit_report["asr_suspicious_gaps"],
+                      asr_recovery_windows=audit_report["asr_recovery_windows"],
+                      asr_segments_recovered=audit_report["asr_segments_recovered"],
+                      asr_recovery_rejected=audit_report["asr_recovery_rejected"],
+                      asr_suspect_segments=audit_report["asr_suspect_segments"],
+                      asr_large_internal_word_gaps=audit_report["asr_large_internal_word_gaps"])
+        else:
+            qc["asr_recovery_check_run"] = False
         self.memory.export()
         print(f"Terminology: manual={summary['manual']} locked={summary['locked']} confirmed={summary['confirmed']} "
               f"local={summary['local']} candidate={summary['candidate']} added={self.memory.stats['added']} "

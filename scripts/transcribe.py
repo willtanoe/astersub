@@ -104,6 +104,9 @@ def main():
     parser.add_argument("--translator-model")
     parser.add_argument("--translation-style", choices=("literal", "natural", "subtitle"), default="subtitle")
     parser.add_argument("--condense-severe-cps", action="store_true")
+    parser.add_argument("--asr-recovery", choices=("off", "auto"), default="auto",
+                        help="Targeted retranscription of speech gaps missed by ASR (high mode)")
+    parser.add_argument("--asr-recovery-max-windows", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--limit", type=int, help="Process only the first N videos (development test)")
@@ -114,8 +117,9 @@ def main():
     args = parser.parse_args()
     args.model = args.model or ("medium" if args.quality == "high" else "large-v3")
     args.output = args.output or ROOT / ("subtitles_high" if args.quality == "high" else "subtitles")
-    if args.batch_size < 1 or args.beam_size < 1 or (args.limit is not None and args.limit < 1):
-        parser.error("batch-size, beam-size and limit must be positive")
+    if (args.batch_size < 1 or args.beam_size < 1 or args.asr_recovery_max_windows < 1
+            or (args.limit is not None and args.limit < 1)):
+        parser.error("batch-size, beam-size, asr-recovery-max-windows and limit must be positive")
     input_root = args.input.resolve()
     output_root = args.output.resolve()
     if not input_root.is_dir():
