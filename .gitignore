@@ -1,0 +1,66 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Models and caches
+.cache/
+models/
+model_cache/
+
+# Generated subtitle pipeline data
+work/
+logs/
+subtitles/
+subtitles_*/
+outputs/
+output/
+input/
+downloads/
+
+# Subtitles and media
+*.srt
+*.vtt
+*.ass
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.m4v
+*.ts
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.aac
+
+# Databases
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# Editors / OS
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
